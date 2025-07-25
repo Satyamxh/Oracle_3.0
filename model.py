@@ -38,71 +38,86 @@ class OracleModel:
 
     def _expected_payoffs(self, juror_index: int) -> Tuple[float, float]:
         other_count = self.num_jurors - 1
+        majority_needed = self.num_jurors // 2 + 1
 
         exp_payoff_X = 0.0
         exp_payoff_Y = 0.0
-        majority_needed = self.num_jurors // 2 + 1
-
+        
         # Assume: If I vote X, everyone else votes Y → outcome is Y
         # Assume: If I vote Y, everyone else votes X → outcome is X
         outcome_X = "Y"
         outcome_Y = "X"
 
         if self.payoff_type.lower() == "basic":
-            p_X = self.p  # since each juror votes X with probability p
-            k_values = np.arange(0, other_count + 1)
-            prob_k = binom.pmf(k_values, other_count, p_X)
-            
+            # belief that any *other* juror votes X
+            P = self.x_mean
+            others = other_count
+            M = majority_needed
+
+            # P(X wins | I vote X): need k+1 ≥ M ⇒ k ≥ M−1
+            p_win_ifX = 1 - binom.cdf(M-2, others, P)
+            # P(X wins | I vote Y): need k ≥ M ⇒ k ≥ M
+            p_win_ifY = 1 - binom.cdf(M-1, others, P)
+
+            # terminal payoffs
             if self.attack:
-               payoff_X = compute_payoff_basic_attack("X", outcome_X, self.p, self.d, self.epsilon)
-               payoff_Y = compute_payoff_basic_attack("Y", outcome_Y, self.p, self.d, self.epsilon)
+                uX_x = compute_payoff_basic_attack("X","X", self.p, self.d, self.epsilon)
+                uX_y = compute_payoff_basic_attack("X","Y", self.p, self.d, self.epsilon)
+                uY_x = compute_payoff_basic_attack("Y","X", self.p, self.d, self.epsilon)
+                uY_y = compute_payoff_basic_attack("Y","Y", self.p, self.d, self.epsilon)
             else:
-                payoff_X = compute_payoff_basic_no_attack("X", outcome_X, self.p, self.d)
-                payoff_Y = compute_payoff_basic_no_attack("Y", outcome_Y, self.p, self.d)
-        
-            # Expected payoff = deterministic under this model
-            exp_payoff_X = payoff_X
-            exp_payoff_Y = payoff_Y
+                uX_x = compute_payoff_basic_no_attack("X","X", self.p, self.d)
+                uX_y = compute_payoff_basic_no_attack("X","Y", self.p, self.d)
+                uY_x = compute_payoff_basic_no_attack("Y","X", self.p, self.d)
+                uY_y = compute_payoff_basic_no_attack("Y","Y", self.p, self.d)
+
+            exp_payoff_X = p_win_ifX*uX_x + (1-p_win_ifX)*uX_y
+            exp_payoff_Y = p_win_ifY*uY_x + (1-p_win_ifY)*uY_y
+
+            return exp_payoff_X, exp_payoff_Y
 
         else:
             # x_mean-based redistributive/symbiotic logic
-            mean = self.x_mean
-            std = self.x_guess_noise
-            q = max(0.0, min(1.0, random.gauss(mean, std)))
+
+            # Redistributive/Symbiotic expected utility with belief P = x_mean
+            P = self.x_mean
 
             k_values = np.arange(0, other_count + 1)
-            prob_k = binom.pmf(k_values, other_count, q)
+            prob_k = binom.pmf(k_values, other_count, P)
 
             for k, prob in zip(k_values, prob_k):
+                # If I vote X, total X-votes = k + 1
                 votes_X_ifX = k + 1
+                outcome_ifX = "X" if votes_X_ifX >= majority_needed else "Y"
+
+                # If I vote Y, total X-votes = k
                 votes_X_ifY = k
-                outcome_X = "X" if votes_X_ifX >= majority_needed else "Y"
-                outcome_Y = "X" if votes_X_ifY >= majority_needed else "Y"
-                
-                # Compute payoffs for A and B votes under different mechanisms
+                outcome_ifY = "X" if votes_X_ifY >= majority_needed else "Y"
+
                 if self.attack:
                     if self.payoff_type.lower() == "redistributive":
-                        payoff_X = compute_payoff_redistributive_attack("X", outcome_X, k + 1, self.num_jurors, self.p, self.d, self.epsilon)
-                        payoff_Y = compute_payoff_redistributive_attack("Y", outcome_Y, k, self.num_jurors, self.p, self.d, self.epsilon)
+                        payoff_X = compute_payoff_redistributive_attack("X", outcome_ifX, votes_X_ifX, self.num_jurors, self.p, self.d, self.epsilon)
+                        payoff_Y = compute_payoff_redistributive_attack("Y", outcome_ifY, votes_X_ifY, self.num_jurors, self.p, self.d, self.epsilon)
                     elif self.payoff_type.lower() == "symbiotic":
-                        payoff_X = compute_payoff_symbiotic_attack("X", outcome_X, k + 1, self.num_jurors, self.p, self.d, self.epsilon)
-                        payoff_Y = compute_payoff_symbiotic_attack("Y", outcome_Y, k, self.num_jurors, self.p, self.d, self.epsilon)
+                        payoff_X = compute_payoff_symbiotic_attack("X", outcome_ifX, votes_X_ifX, self.num_jurors, self.p, self.d, self.epsilon)
+                        payoff_Y = compute_payoff_symbiotic_attack("Y", outcome_ifY, votes_X_ifY, self.num_jurors, self.p, self.d, self.epsilon)
                     else:
                         payoff_X = payoff_Y = 0.0
                 else:
                     if self.payoff_type.lower() == "redistributive":
-                        payoff_X = compute_payoff_redistributive_no_attack("X", outcome_X, k + 1, self.num_jurors, self.p, self.d)
-                        payoff_Y = compute_payoff_redistributive_no_attack("Y", outcome_Y, k, self.num_jurors, self.p, self.d)
+                        payoff_X = compute_payoff_redistributive_no_attack("X", outcome_ifX, votes_X_ifX, self.num_jurors, self.p, self.d)
+                        payoff_Y = compute_payoff_redistributive_no_attack("Y", outcome_ifY, votes_X_ifY, self.num_jurors, self.p, self.d)
                     elif self.payoff_type.lower() == "symbiotic":
-                        payoff_X = compute_payoff_symbiotic_no_attack("X", outcome_X, k + 1, self.num_jurors, self.p, self.d)
-                        payoff_Y = compute_payoff_symbiotic_no_attack("Y", outcome_Y, k, self.num_jurors, self.p, self.d)
+                        payoff_X = compute_payoff_symbiotic_no_attack("X", outcome_ifX, votes_X_ifX, self.num_jurors, self.p, self.d)
+                        payoff_Y = compute_payoff_symbiotic_no_attack("Y", outcome_ifY, votes_X_ifY, self.num_jurors, self.p, self.d)
                     else:
                         payoff_X = payoff_Y = 0.0
 
-            exp_payoff_X += prob * payoff_X
-            exp_payoff_Y += prob * payoff_Y
-
-        return exp_payoff_X, exp_payoff_Y
+                
+                exp_payoff_X += prob * payoff_X
+                exp_payoff_Y += prob * payoff_Y        
+            
+            return exp_payoff_X, exp_payoff_Y
 
     def simulate_once(self) -> Tuple[str, int, int, float, float]:
         """
