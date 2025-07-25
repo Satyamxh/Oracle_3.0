@@ -5,9 +5,13 @@ streamlit run "run.py"
 """
 
 import streamlit as st
-from model import OracleModel
 import pandas as pd
 import altair as alt
+
+from model import OracleModel
+from payoff_mechanisms import (compute_payoff_basic_attack, compute_payoff_basic_no_attack, 
+                               compute_payoff_redistributive_attack, compute_payoff_redistributive_no_attack, 
+                               compute_payoff_symbiotic_attack, compute_payoff_symbiotic_no_attack)
 
 # to add paragraph in help (formatting) - streamlit does not allow markdown and this is a way to bypass that restriction
 
@@ -62,8 +66,8 @@ st.title("Schelling Oracle Simulation")
 st.sidebar.header("Simulation Parameters")
 num_jurors = st.sidebar.slider("Number of Jurors", min_value=1, max_value=100, value=10, step=1,
                                help="Specifies the number of jurors voting.")
-lambda_qre = st.sidebar.slider(r"QRE Sensitivity ($lambda$)", 0.0, 5.0, value=1.5, step=0.1,
-                               help=r"Higher $lambda$ means jurors are more sensitive to payoff differences (closer to rational). Lower values add noise and irrationality.")
+lambda_qre = st.sidebar.slider(r"QRE Sensitivity ($\lambda$)", 0.0, 5.0, value=1.5, step=0.1,
+                               help=r"Higher $\lambda$ means jurors are more sensitive to payoff differences (closer to rational). Lower values add noise and irrationality.")
 noise = st.sidebar.slider("Perception Noise (Payoff Uncertainty)", 0.0, 1.0, value=0.1, step=0.01,
                           help=help_noise)
 deposit = st.sidebar.slider("Deposit ($d$)", 0.0, 5.0, value=0.0, step=0.1,
@@ -103,6 +107,53 @@ results = model.run_simulations(int(num_rounds), progress_bar=progress_bar, stat
 
 progress_bar.empty()
 status_text.empty()
+
+# use model history for normal rounds
+history_X = results.get("history_X", [])
+history_Y = results.get("history_Y", [])
+avg_payoff_X = results.get("avg_payoff_X", [])
+avg_payoff_Y = results.get("avg_payoff_Y", [])
+
+# Prepare DataFrame for plotting and CSV download
+index_label = "Round"
+rounds_index = list(range(1, len(history_X) + 1))
+
+df_overlay = None
+rounds_index = list(range(1, len(history_X) + 1))
+    
+data_dict = {
+    "Round": rounds_index,
+    "Number of Jurors": [num_jurors] * len(history_X),
+    "lambda_qre": [results["lambda_qre"]] * len(history_X),
+    "base reward (p)": [results["p"]] * len(history_X),
+    "deposit (d)": [results["d"]] * len(history_X),
+    "noise": [results["noise"]] * len(history_X),
+    "x_guess_noise": [results["x_guess_noise"]] * len(history_X) if "x_guess_noise" in results else [0.0] * len(history_X),
+    "payoff_type": [results["payoff_type"]] * len(history_X),
+    "X_votes": history_X,
+    "Y_votes": history_Y,
+    "avg_payoff_X": avg_payoff_X,
+    "avg_payoff_Y": avg_payoff_Y,
+}
+
+# add no-attack vote columns if attack mode
+if attack_mode and "history_X_no_attack" in results:
+    data_dict["X_votes_no_attack"] = results["history_X_no_attack"]
+    data_dict["Y_votes_no_attack"] = results["history_Y_no_attack"]
+
+df = pd.DataFrame(data_dict)
+
+# determine the majority and whether attack succeeded
+df["Majority"] = df.apply(
+    lambda row: "Tie" if row["X_votes"] == row["Y_votes"]
+    else ("X" if row["X_votes"] > row["Y_votes"] else "Y"),
+    axis=1
+)
+df["Tie"] = (df["X_votes"] == df["Y_votes"]).astype(int)
+if attack_mode:
+    df["AttackSucceeded"] = df["Majority"].apply(lambda m: 1 if m == "Y" else 0)
+else:
+    df["AttackSucceeded"] = 0
 
 # Payoff matrix visualisation
 st.subheader("Payoff Mechanism Matrix")
@@ -175,6 +226,109 @@ st.markdown("### Variables")
 for var in variables:
     st.markdown(var)
 
+# st.markdown("---") - adds a line to seperate parts cleanly
+st.markdown("### Expected vs Actual Numeric Payoff Matrix")
+st.markdown("*<span style='color:green'>Green = Based on juror's expected <i>x</i></span><br><span style='color:red'>Red = Based on actual <i>x</i> from simulation</span>*", unsafe_allow_html=True)
+
+# Compute x values
+M = num_jurors
+p = base_reward_frac
+d = deposit
+epsilon = epsilon_bonus if attack_mode else 0
+
+# show expected 'x' value based on x_mean vs actual 'x' value calculated post simulation
+x_expected = int(x_mean * (M - 1))
+x_actual = df["X_votes"].mean()
+
+# Get the correct payoff function
+if payoff_mode == "Basic":
+    payoff_func = compute_payoff_basic_attack if attack_mode else compute_payoff_basic_no_attack
+    payoff_args = (p, d, epsilon) if attack_mode else (p, d)
+    def wrapper(vote, outcome):
+        return payoff_func(vote, outcome, *payoff_args)
+
+elif payoff_mode == "Redistributive":
+    payoff_func = compute_payoff_redistributive_attack if attack_mode else compute_payoff_redistributive_no_attack
+    def wrapper(vote, outcome, x_val):
+        return payoff_func(vote, outcome, x_val, M, p, d, epsilon) if attack_mode else payoff_func(vote, outcome, x_val, M, p, d)
+
+elif payoff_mode == "Symbiotic":
+    payoff_func = compute_payoff_symbiotic_attack if attack_mode else compute_payoff_symbiotic_no_attack
+    def wrapper(vote, outcome, x_val):
+        return payoff_func(vote, outcome, x_val, M, p, d, epsilon) if attack_mode else payoff_func(vote, outcome, x_val, M, p, d)
+
+# Define entries: (vote, outcome)
+entries = [("X", "X"), ("Y", "X"), ("X", "Y"), ("Y", "Y")]
+
+expected_vals = []
+actual_vals = []
+
+for vote, outcome in entries:
+    if payoff_mode == "Basic":
+        val = wrapper(vote, outcome)
+        expected_vals.append(val)
+        actual_vals.append(val)
+    else:
+        expected_vals.append(wrapper(vote, outcome, x_expected))
+        actual_vals.append(wrapper(vote, outcome, x_actual))
+
+# HTML matrix
+import streamlit.components.v1 as components
+
+html_matrix = f"""
+<style>
+    .matrix-table {{
+        border-collapse: collapse;
+        margin-top: 10px;
+        font-size: 16px;
+        width: 60%;
+    }}
+    .matrix-table th, .matrix-table td {{
+        border: 1px solid black;
+        padding: 10px;
+        text-align: center;
+        vertical-align: middle;
+        line-height: 1.5;
+    }}
+    .expected {{
+        color: green;
+        display: block;
+    }}
+    .actual {{
+        color: red;
+        display: block;
+    }}
+</style>
+
+<table class="matrix-table">
+    <tr>
+        <th>Vote \\ Outcome</th>
+        <th>X</th>
+        <th>Y</th>
+    </tr>
+    <tr>
+        <td><b>X</b></td>
+        <td><span class='expected'>{expected_vals[0]:.2f}</span><span class='actual'>{actual_vals[0]:.2f}</span></td>
+        <td><span class='expected'>{expected_vals[2]:.2f}</span><span class='actual'>{actual_vals[2]:.2f}</span></td>
+    </tr>
+    <tr>
+        <td><b>Y</b></td>
+        <td><span class='expected'>{expected_vals[1]:.2f}</span><span class='actual'>{actual_vals[1]:.2f}</span></td>
+        <td><span class='expected'>{expected_vals[3]:.2f}</span><span class='actual'>{actual_vals[3]:.2f}</span></td>
+    </tr>
+</table>
+"""
+
+components.html(html_matrix, height=200)
+
+# Display x values below the table
+st.markdown(f"""
+<p>
+<span style='color:green'><b>Expected <i>x</i></b>: {x_expected:.2f}</span><br>
+<span style='color:red'><b>Actual <i>x</i></b>: {x_actual:.2f}</span>
+</p>
+""", unsafe_allow_html=True)
+
 # Display simulation results
 st.subheader("Simulation Results")
 if num_rounds == 1:
@@ -185,6 +339,8 @@ if num_rounds == 1:
     votes_for_Y = int(results.get("average_votes_Y", 0))
     st.write(f"Outcome of this round: **{outcome}**")
     st.write(f"Votes — X: {votes_for_X}, Y: {votes_for_Y}")
+    if "Tie" in df.columns:
+        st.write(f"The result was a tie")
     if attack_mode:
         if outcome == "Y":
             st.write("Attack Outcome: **Succeeded** (Target outcome Y achieved)")
@@ -193,14 +349,17 @@ if num_rounds == 1:
 else:
     # Multiple rounds: show aggregated statistics
     total_runs = num_rounds 
-    outcome_counts = results.get("outcome_counts", results.get("final_outcome_counts"))
-    wins_X = outcome_counts["X"]
-    wins_Y = outcome_counts["Y"]
+    wins_X = (df["Majority"] == "X").sum()
+    wins_Y = (df["Majority"] == "Y").sum()
+    wins_Tie = (df["Majority"] == "Tie").sum()
     pct_X = (wins_X / total_runs) * 100
     pct_Y = (wins_Y / total_runs) * 100
+    pct_Tie = (wins_Tie / total_runs) * 100
     st.write(f"Out of **{total_runs}** simulation rounds:")
     st.write(f"- Outcome **X** won **{wins_X}** times ({pct_X:.1f}%)")
     st.write(f"- Outcome **Y** won **{wins_Y}** times ({pct_Y:.1f}%)")
+    if "Tie" in df.columns:
+        st.write(f"- Number of **tie rounds**: {wins_Tie} ({pct_Tie:.1f}%)")
     if attack_mode:
         success_rate = results.get("attack_success_rate", 0)
         st.write(f"Attack Success Rate (Rate of Y wins as compared to no attack): **{success_rate:.1f}%**")
@@ -210,48 +369,6 @@ else:
     if avg_X is not None and avg_Y is not None:
         st.write(f"Average votes per round — X: **{avg_X:.2f}**, Y: **{avg_Y:.2f}**")
 
-# Use model history for normal rounds even in appeal mode
-history_X = results.get("history_X", [])
-history_Y = results.get("history_Y", [])
-avg_payoff_X = results.get("avg_payoff_X", [])
-avg_payoff_Y = results.get("avg_payoff_Y", [])
-
-# Prepare DataFrame for plotting and CSV download
-index_label = "Round"
-rounds_index = list(range(1, len(history_X) + 1))
-
-df_overlay = None
-rounds_index = list(range(1, len(history_X) + 1))
-    
-data_dict = {
-    "Round": rounds_index,
-    "Number of Jurors": [num_jurors] * len(history_X),
-    "lambda_qre": [results["lambda_qre"]] * len(history_X),
-    "base reward (p)": [results["p"]] * len(history_X),
-    "deposit (d)": [results["d"]] * len(history_X),
-    "noise": [results["noise"]] * len(history_X),
-    "x_guess_noise": [results["x_guess_noise"]] * len(history_X) if "x_guess_noise" in results else [0.0] * len(history_X),
-    "payoff_type": [results["payoff_type"]] * len(history_X),
-    "X_votes": history_X,
-    "Y_votes": history_Y,
-    "avg_payoff_X": avg_payoff_X,
-    "avg_payoff_Y": avg_payoff_Y,
-}
-
-# add no-attack vote columns if attack mode
-if attack_mode and "history_X_no_attack" in results:
-    data_dict["X_votes_no_attack"] = results["history_X_no_attack"]
-    data_dict["Y_votes_no_attack"] = results["history_Y_no_attack"]
-
-df = pd.DataFrame(data_dict)
-
-# determine the majority and whether attack succeeded
-df["Majority"] = df.apply(lambda row: "Y" if row["Y_votes"] > row["X_votes"] else "X", axis=1)
-if attack_mode:
-    df["AttackSucceeded"] = df["Majority"].apply(lambda m: 1 if m == "Y" else 0)
-else:
-    df["AttackSucceeded"] = 0
-
 # Line chart of vote counts across rounds (only shown if multiple rounds)
 if len(df) > 1:
     st.subheader("Voting Dynamics Across Rounds")
@@ -259,18 +376,27 @@ if len(df) > 1:
     base_chart = alt.Chart(df).transform_fold(
         ["X_votes", "Y_votes"],
         as_=["Vote Type", "Count"]
-    ).mark_line().encode(
-        x=alt.X(f"{index_label}:Q", title=index_label),
-        y=alt.Y("Count:Q", title="Number of Votes"),
-        color=alt.Color("Vote Type:N", title="Vote Option",
+        ).mark_line().encode(
+            x=alt.X(f"{index_label}:Q", title=index_label),
+            y=alt.Y("Count:Q", title="Number of Votes"),
+            color=alt.Color("Vote Type:N", title="Vote Option",
             scale=alt.Scale(domain=["X_votes", "Y_votes"], range=["steelblue", "red"]),
             legend=alt.Legend(labelExpr="""{'X_votes': 'Votes for X', 'Y_votes': 'Votes for Y'}[datum.label]"""))
-    ).properties(
+        ).properties(
         width=800,  # Change this to your desired width
         height=400,  # Change this to your desired height
+        )
+
+    # adds tie markers (yellow dots) - when votes are equal, add a yellow dot to represent a tie in the outcome
+    tie_dots = alt.Chart(df[df["Tie"] == 1]).mark_point(
+        color="gold", size=80, shape="circle"
+    ).encode(
+        x=alt.X("Round:Q"),
+        y=alt.Y("X_votes:Q")
     )
 
-    st.altair_chart(base_chart, use_container_width=False)
+    # show combined chart
+    st.altair_chart(base_chart + tie_dots, use_container_width=False)
 
 # Average payoff
 
