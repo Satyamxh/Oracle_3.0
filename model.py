@@ -14,7 +14,7 @@ class OracleModel:
     with a panel of jurors voting on outcome "X" vs "Y", including payoff mechanism and optional attack.
     """
     def __init__(self, num_jurors: int, noise: float, lambda_qre: float, p: float, d: float, epsilon: float, 
-                 payoff_type: str, attack: bool, x_mean: float, x_guess_noise: float):
+                 payoff_type: str, attack: bool, x_mean: float):
         # Store model parameters
         self.num_jurors = num_jurors              # Number of jurors in the panel
         self.noise = noise                        # Noise standard deviation for payoff estimation (juror's imperfect perception of the payoff by adding a noise - simulate human decision - making)
@@ -25,7 +25,7 @@ class OracleModel:
         self.payoff_type = payoff_type            # Payoff mechanism: "Basic", "Redistributive", or "Symbiotic"
         self.attack = attack                      # Whether an attack (p+epsilon attack) is enabled
         self.x_mean = x_mean                      # focal point for estimating 'x' for symbiotic and redistributive mechanisms (set up at 50%) 
-        self.x_guess_noise = x_guess_noise        # Noise for estimating 'x' for symbiotic and redistributive mechanisms
+        # self.x_guess_noise = x_guess_noise        # Noise for estimating 'x' for symbiotic and redistributive mechanisms
 
         # Initialise the jurors
         self.jurors: List[Juror] = [Juror(lambda_qre=lambda_qre, noise=noise) for _ in range(num_jurors)]
@@ -333,9 +333,25 @@ class OracleModel:
 
         # Build the results dict
         results = {
+
+            #input parameters
             "total_runs": num_simulations,
+            "juror_number": self.num_jurors,
+            "p": self.p,
+            "d": self.d,
+            "noise": self.noise,
+            "x_mean": self.x_mean,
+            # "x_guess_noise": self.x_guess_noise,
+            "lambda_qre": self.lambda_qre,
+            "payoff_type": self.payoff_type,
+
+            # attack input parameters
+            "attack": self.attack,
+            "epsilon": self.epsilon,
+
+            # output parameters            
+
             "outcome_counts": outcomes,
-            "attack_success_rate": attack_success_rate,
             "average_votes_X": avg_votes_X,
             "average_votes_Y": avg_votes_Y,
             "history_X": self.history_X,
@@ -351,16 +367,9 @@ class OracleModel:
             "utility_X_list": self.utility_X_list,
             "utility_Y_list": self.utility_Y_list,
 
-            # input parameters
-            "lambda_qre": self.lambda_qre,
-            "noise": self.noise,
-            "p": self.p,
-            "d": self.d,
-            "epsilon": self.epsilon,
-            "payoff_type": self.payoff_type,
-            "attack": self.attack,
-            "x_mean": self.x_mean,
-            "x_guess_noise": self.x_guess_noise,
+            # attack output parameters
+
+            "attack_success_rate": attack_success_rate,
         }
 
         if self.attack:
