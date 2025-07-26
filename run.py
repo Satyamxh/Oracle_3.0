@@ -228,7 +228,7 @@ for var in variables:
 
 # st.markdown("---") - adds a line to seperate parts cleanly
 st.markdown("### Expected vs Actual Numeric Payoff Matrix")
-st.markdown("*<span style='color:green'>Green = Based on juror's expected <i>x</i></span><br><span style='color:red'>Red = Based on actual <i>x</i> from simulation</span>*", unsafe_allow_html=True)
+st.markdown(r"""<span style='color:green'>Green = Based on juror's expected $\mathit{x}$</span><br><span style='color:red'>Red = Based on actual $\mathit{x}$  from simulation</span>""", unsafe_allow_html=True)
 
 # Compute x values
 M = num_jurors
@@ -237,10 +237,14 @@ d = deposit
 epsilon = epsilon_bonus if attack_mode else 0
 
 # show expected 'x' value based on x_mean vs actual 'x' value calculated post simulation
-x_expected = int(x_mean * (M - 1))
-x_actual = df["X_votes"].mean()
+x_expected = (x_mean * (M - 1)) # number of jurors other than the user voting 'X'
+x_actual = df["X_votes"].mean() * (num_jurors - 1) / num_jurors # average number of other jurors voting 'X'
 
-# Get the correct payoff function
+# 'x' value based on x_mean vs actual 'x' value as a percentage
+x_expected_pct = 100 * x_expected / (num_jurors - 1)
+x_actual_pct = 100 * x_actual / (num_jurors - 1)
+
+# compute payoffs for each case (VOTE, OUTCOME): (X,X), (X,Y), (Y,X), (Y,Y)
 if payoff_mode == "Basic":
     payoff_func = compute_payoff_basic_attack if attack_mode else compute_payoff_basic_no_attack
     payoff_args = (p, d, epsilon) if attack_mode else (p, d)
@@ -257,7 +261,7 @@ elif payoff_mode == "Symbiotic":
     def wrapper(vote, outcome, x_val):
         return payoff_func(vote, outcome, x_val, M, p, d, epsilon) if attack_mode else payoff_func(vote, outcome, x_val, M, p, d)
 
-# Define entries: (vote, outcome)
+# defining cases: (VOTE, OUTCOME)
 entries = [("X", "X"), ("Y", "X"), ("X", "Y"), ("Y", "Y")]
 
 expected_vals = []
@@ -322,11 +326,9 @@ html_matrix = f"""
 components.html(html_matrix, height=200)
 
 # Display x values below the table
-st.markdown(f"""
-<p>
-<span style='color:green'><b>Expected <i>x</i></b>: {x_expected:.2f}</span><br>
-<span style='color:red'><b>Actual <i>x</i></b>: {x_actual:.2f}</span>
-</p>
+st.markdown(r"""
+<span style='color:green'><b>Expected</b> $\mathit{x}$ : """  + f"{x_expected:.2f} ({x_expected_pct:.1f}%)" + r"""</span><br>
+<span style='color:red'><b>Actual</b> $\mathit{x}$ : """  + f"{x_actual:.2f} ({x_actual_pct:.1f}%)" + r"""</span>
 """, unsafe_allow_html=True)
 
 # Display simulation results
@@ -373,54 +375,95 @@ else:
 if len(df) > 1:
     st.subheader("Voting Dynamics Across Rounds")
 
-    base_chart = alt.Chart(df).transform_fold(
-        ["X_votes", "Y_votes"],
-        as_=["Vote Type", "Count"]
-        ).mark_line().encode(
-            x=alt.X(f"{index_label}:Q", title=index_label),
-            y=alt.Y("Count:Q", title="Number of Votes"),
-            color=alt.Color("Vote Type:N", title="Vote Option",
-            scale=alt.Scale(domain=["X_votes", "Y_votes"], range=["steelblue", "red"]),
-            legend=alt.Legend(labelExpr="""{'X_votes': 'Votes for X', 'Y_votes': 'Votes for Y'}[datum.label]"""))
-        ).properties(
-        width=800,  # Change this to your desired width
-        height=400,  # Change this to your desired height
-        )
+    df_long = df.copy()
 
-    # adds tie markers (yellow dots) - when votes are equal, add a yellow dot to represent a tie in the outcome
-    tie_dots = alt.Chart(df[df["Tie"] == 1]).mark_point(
-        color="gold", size=80, shape="circle"
-    ).encode(
-        x=alt.X("Round:Q"),
-        y=alt.Y("X_votes:Q")
-    )
+    # Create long-format data with Tie markers included
+    melted = df_long.melt(id_vars=[index_label], value_vars=["X_votes", "Y_votes"],
+                          var_name="Vote Type", value_name="Count")
 
-    # show combined chart
-    st.altair_chart(base_chart + tie_dots, use_container_width=False)
+    # Add Tie points as a separate category
+    if "Tie" in df.columns and df["Tie"].sum() > 0:
+        tie_df = df[df["Tie"] == 1].copy()
+        tie_df["Vote Type"] = "Tie"
+        tie_df["Count"] = tie_df["X_votes"]  # or Y_votes (they are equal in tie)
+        tie_df = tie_df[[index_label, "Vote Type", "Count"]]
+        melted = pd.concat([melted, tie_df], ignore_index=True)
 
-# Average payoff
-
-if len(df) == 1:
-    st.subheader("Payoff per Vote Type of This Round")
-    st.write(f"Average payoff — X: **{avg_payoff_X[0]:.2f}**, Y: **{avg_payoff_Y[0]:.2f}**")
-elif len(df) > 1 and "avg_payoff_X" in df.columns and "avg_payoff_Y" in df.columns: # Line chart of Average payoffs across rounds (only shown if multiple rounds)
-    st.subheader("Average Payoff per Vote Type Across Rounds")
-
-    base_payoff = alt.Chart(df).transform_fold(
-        ["avg_payoff_X", "avg_payoff_Y"],
-        as_=["Vote Type", "Average Payoff"]
-    ).mark_line().encode(
+    # Plot line chart for X and Y votes
+    base_chart = alt.Chart(melted[melted["Vote Type"] != "Tie"]).mark_line().encode(
         x=alt.X(f"{index_label}:Q", title=index_label),
-        y=alt.Y("Average Payoff:Q", title="Payoff"),
+        y=alt.Y("Count:Q", title="Number of Votes"),
         color=alt.Color("Vote Type:N", title="Vote Option",
-            scale=alt.Scale(domain=["avg_payoff_X", "avg_payoff_Y"], range=["steelblue", "red"]),
-            legend=alt.Legend(labelExpr="""{'avg_payoff_X': 'Payoff for voting X', 'avg_payoff_Y': 'Payoff for voting Y'}[datum.label]"""))
+            scale=alt.Scale(domain=["X_votes", "Y_votes", "Tie"],
+                            range=["steelblue", "red", "gold"]),
+            legend=alt.Legend(labelExpr="""{
+                'X_votes': 'Votes for X',
+                'Y_votes': 'Votes for Y',
+                'Tie': 'Tied Votes'
+            }[datum.label]"""))
     ).properties(
         width=800,
         height=400,
     )
-    
-    st.altair_chart(base_payoff, use_container_width=False)
+
+    # Add dots for ties
+    tie_dots = alt.Chart(melted[melted["Vote Type"] == "Tie"]).mark_point(
+        size=80,
+        shape="circle"
+    ).encode(
+        x=alt.X(f"{index_label}:Q"),
+        y=alt.Y("Count:Q"),
+        color=alt.Color("Vote Type:N", scale=alt.Scale(domain=["Tie"], range=["gold"]))
+    )
+
+    st.altair_chart(base_chart + tie_dots, use_container_width=False)
+
+# Average payoff
+
+# Nullify payoff where tie occurs
+df.loc[df["Tie"] == 1, ["avg_payoff_X", "avg_payoff_Y"]] = None
+
+# Tie lines (dashed vertical rules where tie == 1)
+tie_df = df[df["Tie"] == 1][[index_label]].copy()
+tie_df["Vote Type"] = "Tie round"
+tie_df["Average Payoff"] = 0  # Dummy value for y-axis binding
+
+tie_lines = alt.Chart(tie_df).mark_rule(
+    strokeDash=[4, 4],
+    stroke="gold",
+    strokeWidth=2
+).encode(
+    x=alt.X(f"{index_label}:Q"),
+    color=alt.Color("Vote Type:N",
+        scale=alt.Scale(domain=["avg_payoff_X", "avg_payoff_Y", "Tie round"],
+                        range=["steelblue", "red", "gold"]),
+        legend=alt.Legend(title="Vote Option",
+            labelExpr="""{'avg_payoff_X': 'Payoff for voting X',
+                          'avg_payoff_Y': 'Payoff for voting Y',
+                          'Tie round': 'Tie round'}[datum.label]""")
+    )
+)
+
+# Base payoff lines (as before)
+base_payoff = alt.Chart(df).transform_fold(
+    ["avg_payoff_X", "avg_payoff_Y"],
+    as_=["Vote Type", "Average Payoff"]
+).mark_line().encode(
+    x=alt.X(f"{index_label}:Q", title=index_label),
+    y=alt.Y("Average Payoff:Q", title="Payoff"),
+    color=alt.Color("Vote Type:N",
+        scale=alt.Scale(domain=["avg_payoff_X", "avg_payoff_Y", "Tie round"],
+                        range=["steelblue", "red", "gold"]),
+        legend=alt.Legend(title="Vote Option",
+            labelExpr="""{'avg_payoff_X': 'Payoff for voting X',
+                          'avg_payoff_Y': 'Payoff for voting Y',
+                          'Tie round': 'Tie round'}[datum.label]""")
+    )
+).properties(width=800, height=400)
+
+# Combine and render
+st.altair_chart(base_payoff + tie_lines, use_container_width=False)
+
 
 # CSV download for all results (voting dynamics and average payoff)
 
