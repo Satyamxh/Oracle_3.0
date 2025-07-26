@@ -50,15 +50,15 @@ when calibrated via machine learning, this value can be adjusted to reflect juro
 observed in real-world data.
 """
 
-help_x_guess = """
-This models uncertainty in the juror's belief about how many other jurors will vote for X.
+# help_x_guess = """
+# This models uncertainty in the juror's belief about how many other jurors will vote for X.
 
-A conservative estimate of 50$\%$ of the total number of jurors is selected for $x$.
+# A conservative estimate of 50$\%$ of the total number of jurors is selected for $x$.
 
-This parameter sets the level of variation. A higher value means more variation in the juror's internal estimate of $x$.
+# This parameter sets the level of variation. A higher value means more variation in the juror's internal estimate of $x$.
 
-This helps to human decision-making.
-"""
+# This helps to human decision-making.
+# """
 
 st.title("Schelling Oracle Simulation")
 
@@ -78,8 +78,7 @@ payoff_mode = st.sidebar.selectbox("Payoff Mechanism", ["Basic", "Redistributive
                                    help=help_payoff_mech)
 x_mean = st.sidebar.slider("Expected Share of Votes for $X$ ($x$)", 0.0, 1.0, value=0.0, step=0.01, disabled=(payoff_mode == "Basic"),
                                   help=help_x_mean)
-x_guess_noise = st.sidebar.slider("Variance in expected share of votes for $X$ ($x$)", 0.0, 1.0, value=0.0, step=0.01, disabled=(payoff_mode == "Basic"),
-                                  help=help_x_guess)
+# x_guess_noise = st.sidebar.slider("Variance in expected share of votes for $X$ ($x$)", 0.0, 1.0, value=0.0, step=0.01, disabled=(payoff_mode == "Basic"), help=help_x_guess)
 attack_mode = st.sidebar.checkbox(r"Enable p+$\varepsilon$ Attack", value=False,
                                   help=help_attack)
 epsilon_bonus = st.sidebar.slider(r"Epsilon (Bribe amount $\varepsilon$)", 0.0, 5.0, value=0.0, step=0.1, disabled=(not attack_mode),
@@ -97,7 +96,8 @@ model = OracleModel(num_jurors=num_jurors,
                     payoff_type=payoff_mode,
                     attack=attack_mode,
                     x_mean=x_mean,
-                    x_guess_noise=x_guess_noise)
+                    #x_guess_noise=x_guess_noise
+                    )
 
 progress_bar = st.progress(0)
 status_text = st.empty()
@@ -120,21 +120,44 @@ rounds_index = list(range(1, len(history_X) + 1))
 
 df_overlay = None
 rounds_index = list(range(1, len(history_X) + 1))
-    
+
 data_dict = {
+
+    # input paramters
+    
     "Round": rounds_index,
     "Number of Jurors": [num_jurors] * len(history_X),
-    "lambda_qre": [results["lambda_qre"]] * len(history_X),
     "base reward (p)": [results["p"]] * len(history_X),
     "deposit (d)": [results["d"]] * len(history_X),
     "noise": [results["noise"]] * len(history_X),
-    "x_guess_noise": [results["x_guess_noise"]] * len(history_X) if "x_guess_noise" in results else [0.0] * len(history_X),
+    "lambda_qre": [results["lambda_qre"]] * len(history_X),
+    "x_mean": [results["x_mean"]] * len(history_X),
+    # "x_guess_noise": [results["x_guess_noise"]] * len(history_X) if "x_guess_noise" in results else [0.0] * len(history_X),
     "payoff_type": [results["payoff_type"]] * len(history_X),
+    
+    # output parameters
+
     "X_votes": history_X,
     "Y_votes": history_Y,
     "avg_payoff_X": avg_payoff_X,
     "avg_payoff_Y": avg_payoff_Y,
+    "qre_prob_X": results.get("qre_prob_X_list", [None] * len(history_X)),
+    "utility_X": results.get("utility_X_list", [None] * len(history_X)),
+    "utility_Y": results.get("utility_Y_list", [None] * len(history_X)),
+
+    # standard deviations
+
+    "std_votes_X": [results["std_votes_X"]] * len(history_X),
+    "std_votes_Y": [results["std_votes_Y"]] * len(history_X),
+    "std_payoff_X": [results["std_payoff_X"]] * len(history_X),
+    "std_payoff_Y": [results["std_payoff_Y"]] * len(history_X),
+    "avg_qre_prob_X": [results["avg_qre_prob_X"]] * len(history_X),
+
 }
+
+# if attack mode add epsilon value
+if attack_mode:
+    data_dict["epsilon"] = [results["epsilon"]] * len(history_X)
 
 # add no-attack vote columns if attack mode
 if attack_mode and "history_X_no_attack" in results:
