@@ -1,8 +1,18 @@
+# page: Schelling Point Oracle
+
 """
 To run this in terminal use
 
 streamlit run "run.py"
+
+the first page corresponds to the simulation
+
+the second page corresponds to batch processing to generate a large CVS file for
+further analysis of the parameters
 """
+
+import streamlit as st
+st.set_page_config(page_title="Simulate")
 
 import streamlit as st
 import pandas as pd
