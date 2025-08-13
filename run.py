@@ -76,19 +76,24 @@ st.title("Schelling Oracle Simulation")
 st.sidebar.header("Simulation Parameters")
 num_jurors = st.sidebar.slider("Number of Jurors", min_value=1, max_value=100, value=10, step=1,
                                help="Specifies the number of jurors voting.")
-lambda_qre = st.sidebar.slider(r"QRE Sensitivity ($\lambda$)", 0.0, 5.0, value=1.5, step=0.1,
+log_lambda = st.sidebar.slider(r"log$_{10}$ QRE Sensitivity ($\lambda$)",
+                               -3.0, # log10(0.001)
+                               0.5, # log10(10)
+                               value=0.0, 
+                               step=0.01,
                                help=r"Higher $\lambda$ means jurors are more sensitive to payoff differences (closer to rational). Lower values add noise and irrationality.")
+lambda_qre = 10 ** log_lambda
 noise = st.sidebar.slider("Perception Noise (Payoff Uncertainty)", 0.0, 1.0, value=0.1, step=0.01,
                           help=help_noise)
-deposit = st.sidebar.slider("Deposit ($d$)", 0.0, 5.0, value=0.0, step=0.1,
+deposit = st.sidebar.slider("Deposit ($d$)", 0.0, 100.0, value=99.49, step=0.1,
                             help="Specifies the initial deposit paid by the juror ($d$ in payoff matrix).")
-base_reward_frac = st.sidebar.slider("Base Reward ($p$)", 0.0, 5.0, value=1.0, step=0.1,
+base_reward_frac = st.sidebar.slider("Base Reward ($p$)", 0.0, 100.0, value=33.40, step=0.1,
                                      help="Specifies the reward for voting with the majority ($p$ in payoff matrix).")
-payoff_mode = st.sidebar.selectbox("Payoff Mechanism", ["Basic", "Redistributive", "Symbiotic"],
-                                   help=help_payoff_mech)
-x_mean = st.sidebar.slider("Expected Share of Votes for $X$ ($x$)", 0.0, 1.0, value=0.0, step=0.01, disabled=(payoff_mode == "Basic"),
+x_mean = st.sidebar.slider("Expected Share of Votes for $X$ ($x$)", 0.0, 1.0, value=0.0, step=0.01,
                                   help=help_x_mean)
 # x_guess_noise = st.sidebar.slider("Variance in expected share of votes for $X$ ($x$)", 0.0, 1.0, value=0.0, step=0.01, disabled=(payoff_mode == "Basic"), help=help_x_guess)
+payoff_mode = st.sidebar.selectbox("Payoff Mechanism", ["Basic", "Redistributive", "Symbiotic"],
+                                   help=help_payoff_mech)
 attack_mode = st.sidebar.checkbox(r"Enable p+$\varepsilon$ Attack", value=False,
                                   help=help_attack)
 epsilon_bonus = st.sidebar.slider(r"Epsilon (Bribe amount $\varepsilon$)", 0.0, 5.0, value=0.0, step=0.1, disabled=(not attack_mode),
