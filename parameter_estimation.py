@@ -16,9 +16,35 @@ D_VAL = 99.49
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ---- hyperparameters (start tiny; you can 2x if collapse persists)
+USE_PINN = True
+GAMMA_FP_START, GAMMA_FP_END, ANNEAL_STEPS = 0.0, 0.3, 600   # QRE fixed-point weight
+W_BETA, W_LAMBDA, W_ENT = 0.05, 0.01, 0.02                   # x prior, lambda prior, early-entropy
+
+def gamma_fp(epoch: int):
+    t = min(max(epoch, 0), ANNEAL_STEPS)
+    return GAMMA_FP_START + (GAMMA_FP_END - GAMMA_FP_START) * (t / ANNEAL_STEPS)
+
+def beta_prior_penalty(x, alpha=None, beta=None):
+    if alpha is None: alpha = ALPHA_X
+    if beta  is None: beta  = BETA_X
+    eps = 1e-6
+    return -((alpha-1)*torch.log(x.clamp_min(eps))
+             + (beta-1)*torch.log((1-x).clamp_min(eps))).mean()
+
 def safe_logit(z: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
     z = z.clamp(min=eps, max=1 - eps)
     return torch.log(z) - torch.log(1 - z)
+
+def two_sided_binom_loglik(m, n, q):
+    l1 = torch_binom_logpmf(m,     n, q)
+    l2 = torch_binom_logpmf(n - m, n, q)
+    return torch.logsumexp(torch.stack([l1, l2], dim=0), dim=0)
+
+W_EDGE = 0.01  # small; tune 0.005–0.02
+def edge_barrier(x, eps=1e-6):
+    t = x.clamp(eps, 1-eps)
+    return -torch.log(t * (1 - t)).mean()  # discourages x→{0,1} but doesn't pick a center
 
 def payoff_redistrib_torch(vote_is_X: torch.Tensor,
                            outcome_is_X: torch.Tensor,
@@ -250,6 +276,10 @@ sum_m = sum(m for _, m in test_real)
 sum_n = sum(n for n, _ in test_real)
 x_prior = (sum_m / sum_n)
 
+mu = float(x_prior)      # e.g., ~0.6–0.65 typically
+conc = 50.0              # 30–80 is a good starting band
+ALPHA_X, BETA_X = mu*conc, (1-mu)*conc
+
 # === Tensors: training from bootstrap, testing on real ===
 X_train = torch.tensor(
     [[math.log(n+1), m / n] for n, m, _, _ in train_boot],
@@ -276,7 +306,8 @@ with torch.no_grad():
     loglam_grid = torch.linspace(-3, 1, 81, device=device)   # 10^-3 .. 10^1
     x_grid      = torch.linspace(0.05, 0.95, 181, device=device)
 
-    n = Y_test[:,0].long(); m = Y_test[:,1]; w = Y_test[:,0] / Y_test[:,0].mean()
+    n = Y_test[:,0].long(); m = Y_test[:,1]
+    w = Y_test[:,0] / Y_test[:,0].mean()
     best = (float('inf'), None, None)
 
     for ll in loglam_grid:
@@ -285,12 +316,23 @@ with torch.no_grad():
         for x in x_grid:
             x_b = x.expand(n.shape[0])
             q = qre_choice_prob_torch_vec(n, P_VAL, D_VAL, lam_b, x_b).clamp(1e-6, 1-1e-6)
-            nll = (w * (-torch_binom_logpmf(m, n.float(), q))).mean().item()
+
+            # WITH this two-sided version:
+            nll = (w * (-two_sided_binom_loglik(m, n.float(), q))).mean().item()
+
             if nll < best[0]:
                 best = (nll, float(10**ll), float(x))
 print("Best global NLL (test):", best)  # (nll, lambda*, x*)
 best_lambda, best_x = best[1], best[2]
 
+# center lambda prior at your grid-search best (already computed as best_lambda)
+MU_LOG10_LAM, SIGMA_LOG10_LAM = math.log10(best_lambda), 0.75  # wide, gentle
+def lambda_prior_penalty(log10lam, mu=MU_LOG10_LAM, sigma=SIGMA_LOG10_LAM):
+    return ((log10lam - mu) / sigma).pow(2).mean()
+
+def bernoulli_entropy(p, eps=1e-6):  # high near 0.5, low near 0/1
+    p = p.clamp(eps, 1-eps)
+    return -(p*torch.log(p) + (1-p)*torch.log(1-p))
 
 # === DataLoader (mini-batch) ===
 from torch.utils.data import TensorDataset, DataLoader
@@ -300,8 +342,8 @@ BATCH_SIZE = 1024  # tune 256–4096 depending on GPU/CPU memory
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
 # === Model Init ===
-init_ax = math.log(best_x/(1-best_x))   # logit(best_x)
 init_al = math.log10(best_lambda)       # log10(best_lambda)
+init_ax = 0.0  # logit(0.5)
 model = ByMHead(ax=init_ax, bx=0.0, al=init_al, bl=0.0).to(device)
 
 optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
@@ -311,20 +353,6 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 PRETRAIN_SUP_ONLY_EPOCHS = 0   # first fit sim-prior (λ,x), then add NLL
 alpha_x = 0.05     # weight for x supervision
 beta_l  = 0.05     # weight for log10(λ) supervision
-
-# === Toggle PINN ===
-USE_PINN = False
-
-# weight for fixed-point constraint q == x
-GAMMA_FP_START = 0.0
-GAMMA_FP_END   = 0.0
-ANNEAL_STEPS   = 0
-def gamma_fp(epoch: int):  # won't be used when USE_PINN=False
-    return 0.0
-
-#def gamma_fp(epoch: int):
-#    t = min(max(epoch, 0), ANNEAL_STEPS)
-#    return GAMMA_FP_START + (GAMMA_FP_END - GAMMA_FP_START) * (t / ANNEAL_STEPS)
 
 for epoch in range(2000):
     model.train()
@@ -345,8 +373,10 @@ for epoch in range(2000):
         #nll_b = (w_b * nll_vec).mean()
         #nll_b = (-torch_binom_logpmf(m_b, n_b, q_b)).mean()
         w_b = n_b / n_b.mean()
-        nll_vec = -torch_binom_logpmf(m_b, n_b, q_b)
-        nll_b = (w_b * nll_vec).mean()
+        nll_vec = -two_sided_binom_loglik(m_b, n_b, q_b)
+        nll_b   = (w_b * nll_vec).mean()
+
+        
 
         if epoch < PRETRAIN_SUP_ONLY_EPOCHS:
             sup_scale = 1.0
@@ -359,15 +389,10 @@ for epoch in range(2000):
             beta_l  * F.smooth_l1_loss(loglam_b, lam_true_log10_b)
         )
 
-        # --- PINN fixed-point: q == x ---
-        # --- PINN fixed-point: start in probability space, switch to logits later ---
-        # --- PINN fixed-point with masking to avoid saturated 0/1 regions ---
-        # --- PINN fixed-point: q == x (prob→logit blend) ---
-         # --- PINN (only if enabled) ---
+        # (1) QRE fixed-point PINN residual with ramp + interior mask (as you had)
         if USE_PINN:
             mask = (q_b > 0.15) & (q_b < 0.85) & (x_b > 0.15) & (x_b < 0.85)
-            T0, WIDTH = 700, 400
-            s = max(0.0, min(1.0, (epoch - T0) / float(max(1, WIDTH))))
+            s = gamma_fp(epoch)
             if mask.any():
                 pinn_prob  = F.mse_loss(q_b[mask], x_b[mask])
                 diff_logit = safe_logit(q_b[mask]) - safe_logit(x_b[mask])
@@ -375,17 +400,24 @@ for epoch in range(2000):
                 pinn_fp    = (1.0 - s) * pinn_prob + s * pinn_logit
             else:
                 pinn_fp = torch.tensor(0.0, device=q_b.device)
-            pinn_weight = gamma_fp(epoch)
         else:
             pinn_fp = torch.tensor(0.0, device=q_b.device)
-            pinn_weight = 0.0
+        s_fp = gamma_fp(epoch)
+    
+        # (2) soft, informative (Beta) prior on x 
+        pen_x = beta_prior_penalty(x_b, ALPHA_X, BETA_X)
 
-        # Loss (no PINN term when disabled)
-        if epoch < PRETRAIN_SUP_ONLY_EPOCHS:
-            loss = sup_b
-        else:
-            loss = nll_b + sup_b + pinn_weight * pinn_fp
+        # (3) mild prior on log10(lambda) around grid best
+        pen_lam = lambda_prior_penalty(loglam_b)
 
+        # (4) early entropy nudge on q, annealed to zero (linear)
+        ent_weight = max(0.0, 1.0 - epoch/600.0) * W_ENT
+        ent_q = -bernoulli_entropy(q_b).mean()  # NEGATIVE entropy (so minimizing loss == maximizing entropy)
+    
+        # Final loss (no boundaries anywhere)
+        loss = nll_b + sup_b + gamma_fp(epoch)*pinn_fp \
+                + W_EDGE*edge_barrier(x_b) \
+                + W_LAMBDA*pen_lam + ent_weight*ent_q
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -401,8 +433,22 @@ for epoch in range(2000):
 
             m_t = Y_test[:,1]; n_t = Y_test[:,0]
             w_t = n_t / n_t.mean()
-            test_nll = (w_t * (-torch_binom_logpmf(m_t, n_t, q_t))).mean().item()
-            mae_test = (q_t - (m_t / n_t)).abs().mean().item()
+
+            s = m_t / n_t  # recorded share for X
+            mae_q     = (q_t - s).abs().mean()   
+            mae_flip  = (1 - q_t - s).abs().mean()
+            FLIP = (mae_flip < mae_q)  # True -> model is on the mirrored branch
+    
+            # For reporting and simulation, use:
+            q_oriented = q_t if not FLIP else (1.0 - q_t)
+            x_oriented = x_t if not FLIP else (1.0 - x_t)
+
+
+            # label-invariant (two-sided) NLL
+            test_nll = (w_t * (-two_sided_binom_loglik(m_t, n_t, q_t))).mean().item()
+
+            # label-invariant MAE: distance to the closer of m/n or 1 - m/n
+            mae_sym = torch.minimum((q_t - (m_t / n_t)).abs(),(q_t - (1 - m_t / n_t)).abs()).mean().item()
 
             # use the same relaxed mask as the final LBFGS eval
             if USE_PINN:
@@ -428,17 +474,19 @@ for epoch in range(2000):
             lam_mae_log = (loglam_pred_train - lam_true_log10).abs().mean().item()
             x_mae       = (x_pred_train   - x_true_train  ).abs().mean().item()
 
+            frac_in_band = ((x_oriented >= 0.50) & (x_oriented <= 0.77)).float().mean().item()
+
             print(f"\n=== Epoch {epoch} ===")
             print(f"[Train]")
             print(f"  Mean Total Loss                       : {total_loss/len(train_loader):.4f}")
 
             print(f"[Test Performance]")
             print(f"  NLL (votes)                           : {test_nll:.4f}")
-            print(f"  MAE (\U0001D45E vs \U0001D45A / \U0001D45B)                      : {mae_test:.4f}")
+            print(f"  MAE (\U0001D45E vs \U0001D45A / \U0001D45B)                      : {mae_sym:.4f}")
 
             print(f"[Test Parameter Stats]")
             print(f"  Mean \u03BB                                : {lam_t.mean().item():.4f}")
-            print(f"  Mean \U0001D465                                : {x_t.mean().item():.4f}")
+            print(f"  Mean \U0001D465                                : {x_oriented.mean().item():.4f}")
             print(f"  PINN FP (blend, MSE/Huber)             : {pinn_fp_val:.4f}")
             print(f"    ├─ prob-space MSE                    : {pinn_prob_val:.4f}")
             print(f"    └─ logit-space Huber                 : {pinn_logit_val:.4f}")
@@ -446,5 +494,6 @@ for epoch in range(2000):
             print(f"[Train Supervision Diagnostics]")
             print(f"  Train MAE (log\u2081\u2080(\u03BB) vs synthetic data): {lam_mae_log:.4f}")
             print(f"  MAE \U0001D465 vs synthetic data               : {x_mae:.4f}")
-
             print(f"  PINN mask coverage                     : {pin_mask_cov:.3f}")
+
+            print(f"[Test] Share x (oriented) in [0.50,0.77] : {frac_in_band:.3f} | FLIP={bool(FLIP)}")
